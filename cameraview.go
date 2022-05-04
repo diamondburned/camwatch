@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
 	"time"
 
+	"github.com/diamondburned/gotk4/pkg/cairo"
 	"github.com/diamondburned/gotk4/pkg/core/gioutil"
 	"github.com/diamondburned/gotk4/pkg/core/glib"
 	"github.com/diamondburned/gotk4/pkg/gdkpixbuf/v2"
@@ -19,13 +22,19 @@ import (
 	"github.com/diamondburned/gotkit/gtkutil"
 	"github.com/diamondburned/gotkit/gtkutil/cssutil"
 	"github.com/diamondburned/gotkit/gtkutil/imgutil"
+	"github.com/diamondburned/vgcairo"
 	"github.com/pkg/errors"
+	"gonum.org/v1/plot"
+	"gonum.org/v1/plot/plotter"
+	"gonum.org/v1/plot/vg"
+	"gonum.org/v1/plot/vg/draw"
 )
 
 type CameraHeader struct {
 	*gtk.CenterBox
 	b *gtk.Button
 	t *gtk.Label
+	g *LatencyGraph
 
 	past time.Time
 }
@@ -52,18 +61,22 @@ var headerCSS = cssutil.Applier("camera-header", `
 	.camera-header button {
 		transition: linear 75ms all;
 	}
-	.camera-header > *:last-child > *:not(:first-child) {
+	.camera-header > *:last-child > *:not(:first-child):not(.camera-time) {
 		margin-left: 4px;
 	}
 	.camera-time {
 		font-family: monospace;
 		font-size: 0.9em;
-		margin-right: 0.5em;
+		margin-left: 8px;
 	}
 `)
 
 func NewCameraHeader(ctx context.Context) *CameraHeader {
 	h := CameraHeader{}
+	h.g = NewLatencyGraph(ctx, 12)
+	h.g.Hide()
+	h.g.SetVAlign(gtk.AlignCenter)
+
 	h.t = gtk.NewLabel("")
 	h.t.AddCSSClass("camera-time")
 	h.t.Hide()
@@ -98,6 +111,7 @@ func NewCameraHeader(ctx context.Context) *CameraHeader {
 	})
 
 	end := gtk.NewBox(gtk.OrientationHorizontal, 0)
+	end.Append(h.g)
 	end.Append(h.t)
 	end.Append(fullscreen)
 	end.Append(menu)
@@ -134,7 +148,11 @@ func (h *CameraHeader) SetVisibleTime(t time.Time) {
 
 	msg := t.Format(timeFormat.Value())
 	if !h.past.IsZero() {
-		msg += " " + shortDura(t.Sub(h.past))
+		latency := t.Sub(h.past)
+		msg += " " + shortDura(latency)
+
+		h.g.Show()
+		h.g.AddValue(latency.Seconds())
 	}
 
 	h.t.Show()
@@ -142,10 +160,113 @@ func (h *CameraHeader) SetVisibleTime(t time.Time) {
 }
 
 func shortDura(d time.Duration) string {
-	if d >= time.Second {
-		return fmt.Sprintf("%.3fs ", d.Seconds())
+	ms := d.Milliseconds()
+	if ms > 9999 {
+		return fmt.Sprintf("%.3gs ", d.Seconds())
 	}
-	return fmt.Sprintf("0.%03dms", d.Milliseconds())
+	return fmt.Sprintf("%4dms", d.Milliseconds())
+}
+
+// LatencyGraph is a mini sparkline-style graph showing the time between
+// fetches. It isn't latency per-se, but since the graph automatically scales,
+// it doesn't matter.
+type LatencyGraph struct {
+	*gtk.DrawingArea
+	plot *plot.Plot
+	line *plotter.Line
+	max  int
+}
+
+var latencyGraphCSS = cssutil.Applier("latency-graph", `
+	.latency-graph.graph-line {
+		background: linear-gradient(to top, alpha(green, 0.65), alpha(lime, 0.85));
+	}
+`)
+
+func NewLatencyGraph(ctx context.Context, max int) *LatencyGraph {
+	g := LatencyGraph{max: max}
+
+	g.line = &plotter.Line{
+		XYs: make(plotter.XYs, 0, max),
+		LineStyle: draw.LineStyle{
+			Color: color.Transparent,
+			Width: vg.Points(2),
+		},
+	}
+
+	g.plot = plot.New()
+	g.plot.X.Padding = 0
+	g.plot.X.Min = 0
+	g.plot.X.Max = float64(max - 1)
+	g.plot.Y.Padding = vg.Length(0)
+	g.plot.BackgroundColor = color.Transparent
+	g.plot.HideAxes()
+	g.plot.Add(g.line)
+
+	g.DrawingArea = gtk.NewDrawingArea()
+	g.DrawingArea.SetSizeRequest(64, 18)
+	latencyGraphCSS(g.DrawingArea)
+
+	var bgsurface *cairo.Surface
+
+	g.SetDrawFunc(func(_ *gtk.DrawingArea, t *cairo.Context, w, h int) {
+		if bgsurface == nil || bgsurface.Width() != w || bgsurface.Height() != h {
+			bgsurface = t.Target().CreateSimilar(cairo.ContentColorAlpha, w, h)
+			// Hack this by setting the line color to a value that only vgcairo
+			// understands.
+			g.line.LineStyle.Color = vgcairo.ColorSurface(bgsurface, 0, 0)
+
+			styles := g.StyleContext()
+			styles.Save()
+			defer styles.Restore()
+
+			styles.AddClass("graph-line")
+			gtk.RenderBackground(styles, cairo.Create(bgsurface), 0, 0, float64(w), float64(h))
+		}
+
+		t.SetLineCap(cairo.LineCapRound)
+
+		g.plot.Draw(draw.NewCanvas(
+			vgcairo.NewCanvas(t),
+			vg.Length(float64(w)),
+			vg.Length(float64(h)),
+		))
+	})
+
+	return &g
+}
+
+// AddValue adds a value into the lqtency graph.
+func (g *LatencyGraph) AddValue(val float64) {
+	// (0, 0) is actually at the top-left corner, so we do this.
+	val = -val
+
+	if len(g.line.XYs) == g.max {
+		// Shift leftwards once to make space for the last entry.
+		copy(g.line.XYs, g.line.XYs[1:])
+		g.line.XYs[len(g.line.XYs)-1].Y = val
+	} else {
+		g.line.XYs = append(g.line.XYs, plotter.XY{Y: val})
+	}
+
+	yMin := math.Inf(+1)
+	yMax := math.Inf(-1)
+	for _, pt := range g.line.XYs {
+		yMin = math.Min(yMin, pt.Y)
+		yMax = math.Max(yMax, pt.Y)
+	}
+
+	// Flip because we negated val.
+	g.plot.Y.Min = yMax
+	g.plot.Y.Max = yMin
+
+	x := float64(g.max)
+	for i := len(g.line.XYs) - 1; i >= 0; i-- {
+		x--
+		g.line.XYs[i].X = x
+	}
+
+	g.QueueDraw()
 }
 
 type CameraView struct {

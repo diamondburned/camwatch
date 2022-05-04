@@ -18,7 +18,7 @@ type ConfigPage struct {
 }
 
 var configPageCSS = cssutil.Applier("config-page", `
-	.config-page {
+	.config-page-form {
 		margin: 8px;
 	}
 `)
@@ -43,20 +43,21 @@ func NewConfigPage() *ConfigPage {
 	topBox.Append(url)
 	topBox.Append(fps)
 
-	midBox := gtk.NewBox(gtk.OrientationVertical, 6)
-	midBox.SetVExpand(true)
-	midBox.SetHExpand(true)
-	midBox.SetVAlign(gtk.AlignCenter)
-	midBox.SetHAlign(gtk.AlignCenter)
-	midBox.Append(topBox)
-	midBox.Append(connect)
+	form := gtk.NewBox(gtk.OrientationVertical, 6)
+	form.AddCSSClass("config-page-form")
+	form.SetVExpand(true)
+	form.SetHExpand(true)
+	form.SetVAlign(gtk.AlignCenter)
+	form.SetHAlign(gtk.AlignCenter)
+	form.Append(topBox)
+	form.Append(connect)
 
 	header := gtk.NewHeaderBar()
 	header.AddCSSClass("titlebar")
 
 	box := gtk.NewBox(gtk.OrientationVertical, 0)
 	box.Append(header)
-	box.Append(midBox)
+	box.Append(form)
 	configPageCSS(box)
 
 	p := ConfigPage{
