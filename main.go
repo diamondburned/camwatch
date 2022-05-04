@@ -7,7 +7,10 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/diamondburned/gotk4/pkg/core/gioutil"
@@ -15,7 +18,9 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gdkpixbuf/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 	"github.com/diamondburned/gotkit/app"
+	"github.com/diamondburned/gotkit/app/prefs"
 	"github.com/diamondburned/gotkit/app/prefs/kvstate"
+	"github.com/diamondburned/gotkit/components/prefui"
 	"github.com/diamondburned/gotkit/gtkutil"
 	"github.com/diamondburned/gotkit/gtkutil/cssutil"
 	"github.com/diamondburned/gotkit/gtkutil/imgutil"
@@ -24,6 +29,9 @@ import (
 
 func main() {
 	app := app.New("com.github.diamondburned.camwatch", "CamWatch")
+	app.AddActions(map[string]func(){
+		"app.quit": app.Quit,
+	})
 	app.ConnectActivate(func() { activate(app.Context()) })
 	app.RunMain(context.Background())
 }
@@ -60,6 +68,10 @@ func activate(ctx context.Context) {
 		currentCam = cam
 	})
 
+	gtkutil.BindActionMap(win, map[string]func(){
+		"win.preferences": func() { prefui.ShowDialog(ctx) },
+	})
+
 	win.SetChild(pages)
 	win.Show()
 }
@@ -71,6 +83,12 @@ type ConfigPage struct {
 	connect *gtk.Button
 }
 
+var configPageCSS = cssutil.Applier("config-page", `
+	.config-page {
+		margin: 8px;
+	}
+`)
+
 func NewConfigPage() *ConfigPage {
 	connect := gtk.NewButtonWithLabel("Connect")
 	connect.AddCSSClass("suggested")
@@ -79,12 +97,13 @@ func NewConfigPage() *ConfigPage {
 	url := gtk.NewEntry()
 	url.SetInputPurpose(gtk.InputPurposeURL)
 	url.SetActivatesDefault(true)
-	url.SetPlaceholderText("http://localhost/snap.jpeg")
+	url.SetPlaceholderText("http://localhost/snap.jpeg" + strings.Repeat(" ", 60)) // nat size hack
 	url.SetHExpand(true)
 	url.ConnectActivate(func() { connect.Activate() })
 
 	fps := gtk.NewSpinButtonWithRange(1, 60, 1)
-	fps.SetValue(15)
+	fps.SetTooltipText("Updates per second")
+	fps.SetValue(1)
 
 	topBox := gtk.NewBox(gtk.OrientationHorizontal, 6)
 	topBox.Append(url)
@@ -104,6 +123,7 @@ func NewConfigPage() *ConfigPage {
 	box := gtk.NewBox(gtk.OrientationVertical, 0)
 	box.Append(header)
 	box.Append(midBox)
+	configPageCSS(box)
 
 	p := ConfigPage{
 		Box:     box,
@@ -197,7 +217,7 @@ var headerCSS = cssutil.Applier("camera-header", `
 	.camera-header button {
 		transition: linear 75ms all;
 	}
-	.camera-header > *:last-child > windowcontrols {
+	.camera-header > *:last-child > *:not(:first-child) {
 		margin-left: 4px;
 	}
 	.camera-time {
@@ -234,9 +254,18 @@ func NewCameraHeader(ctx context.Context) *CameraHeader {
 		}
 	})
 
+	menu := gtk.NewButtonFromIconName("open-menu-symbolic")
+	menu.ConnectClicked(func() {
+		gtkutil.ShowPopoverMenu(menu, gtk.PosBottom, [][2]string{
+			{"_Preferences", "win.preferences"},
+			{"_Quit", "app.quit"},
+		})
+	})
+
 	end := gtk.NewBox(gtk.OrientationHorizontal, 0)
 	end.Append(h.t)
 	end.Append(fullscreen)
+	end.Append(menu)
 	end.Append(gtk.NewWindowControls(gtk.PackEnd))
 
 	start := gtk.NewBox(gtk.OrientationHorizontal, 0)
@@ -252,6 +281,13 @@ func NewCameraHeader(ctx context.Context) *CameraHeader {
 	return &h
 }
 
+var timeFormat = prefs.NewString("3:04:05.000 PM", prefs.StringMeta{
+	Name:        "Time Format",
+	Section:     "Header",
+	Description: "The format of the timestamp at the top-right corner. See https://pkg.go.dev/time#pkg-constants.",
+	Placeholder: "3:04:05.000 PM",
+})
+
 // SetVisibleTime sets the visible time. If t is zero, then the time is hidden.
 func (h *CameraHeader) SetVisibleTime(t time.Time) {
 	defer func() { h.past = t }()
@@ -261,7 +297,7 @@ func (h *CameraHeader) SetVisibleTime(t time.Time) {
 		return
 	}
 
-	msg := t.Format("3:04:05.000 PM")
+	msg := t.Format(timeFormat.Value())
 	if !h.past.IsZero() {
 		msg += " " + shortDura(t.Sub(h.past))
 	}
@@ -394,6 +430,14 @@ type frameDownloader struct {
 	etag   string
 }
 
+var denoiseThreshold = prefs.NewInt(0, prefs.IntMeta{
+	Name:        "Denoise Threshold",
+	Section:     "Video",
+	Description: "Denoise strength, or 0 to not denoise at all.",
+	Min:         0,
+	Max:         500,
+})
+
 func (f *frameDownloader) download(ctx context.Context, url string) (*gdkpixbuf.Pixbuf, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -414,8 +458,26 @@ func (f *frameDownloader) download(ctx context.Context, url string) (*gdkpixbuf.
 	loader := gdkpixbuf.NewPixbufLoader()
 	defer loader.Close()
 
-	if _, err := io.Copy(gioutil.PixbufLoaderWriter(loader), resp.Body); err != nil {
-		return nil, errors.Wrap(err, "cannot download frame")
+	if denoiseThresh := denoiseThreshold.Value(); denoiseThresh > 0 {
+		ffmpeg := exec.CommandContext(ctx, "ffmpeg",
+			"-loglevel", "warning",
+			"-i", "-",
+			"-c:v", "mjpeg", "-qscale:v", "2",
+			"-vf", fmt.Sprintf("vaguedenoiser=threshold=%d", denoiseThresh),
+			"-f", "image2pipe", "-",
+		)
+
+		ffmpeg.Stdin = resp.Body
+		ffmpeg.Stderr = os.Stderr
+		ffmpeg.Stdout = gioutil.PixbufLoaderWriter(loader)
+
+		if err := ffmpeg.Run(); err != nil {
+			return nil, errors.Wrap(err, "cannot download frame over ffmpeg")
+		}
+	} else {
+		if _, err := io.Copy(gioutil.PixbufLoaderWriter(loader), resp.Body); err != nil {
+			return nil, errors.Wrap(err, "cannot download frame")
+		}
 	}
 
 	if err := loader.Close(); err != nil {
