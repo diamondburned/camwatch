@@ -10,8 +10,8 @@ github.com/boombuler/barcode v1.0.1/go.mod h1:paBWMcWSl3LHKBqUq+rly7CNSldXjb2rDl
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/diamondburned/gotk4/pkg v0.0.0-20220417091308-856167c02355 h1:5J/EC+03IaQPbg8llTadKW7e+hNWBaY/eZXm5cXPTas=
 github.com/diamondburned/gotk4/pkg v0.0.0-20220417091308-856167c02355/go.mod h1:rLH6FHos690jFgAM/GYEpMykuE/9NmN6zOvFlr8JTvE=
-github.com/diamondburned/gotkit v0.0.0-20220504052556-1deb2e1363be h1:RXMFqsHY2fsloMAZ/rahfwrmi3e3D+n0/koylsHRLPI=
-github.com/diamondburned/gotkit v0.0.0-20220504052556-1deb2e1363be/go.mod h1:vPfJRyjYv+hBfsnWf9Ouacp1Urltx8/qy5b0TWyeZNo=
+github.com/diamondburned/gotkit v0.0.0-20220504082502-664b0f90c13e h1:WAH5u9RHitmw4ljhJUzJzWBXFULCpHgVdIzdHqs9zH0=
+github.com/diamondburned/gotkit v0.0.0-20220504082502-664b0f90c13e/go.mod h1:vPfJRyjYv+hBfsnWf9Ouacp1Urltx8/qy5b0TWyeZNo=
 github.com/diamondburned/vgcairo v0.0.0-20220504073052-418f58d14e2b h1:R7ZMGbBsycM2dxYe1KEutX+YCJs972W6L8La9bZKAho=
 github.com/diamondburned/vgcairo v0.0.0-20220504073052-418f58d14e2b/go.mod h1:YbaR/3ovX+MCBHIS0M829wijmgGxbyRjPDZPvn4ZOHc=
 github.com/fogleman/gg v1.3.0/go.mod h1:R/bRT+9gY/C5z7JzPU0zXsXHKM4/ayA+zqcVNZzPa1k=

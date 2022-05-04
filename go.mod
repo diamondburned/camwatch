@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/diamondburned/gotk4/pkg v0.0.0-20220417091308-856167c02355
-	github.com/diamondburned/gotkit v0.0.0-20220504052556-1deb2e1363be
+	github.com/diamondburned/gotkit v0.0.0-20220504082502-664b0f90c13e
 	github.com/diamondburned/vgcairo v0.0.0-20220504073052-418f58d14e2b
 	github.com/pkg/errors v0.9.1
 	gonum.org/v1/plot v0.11.0

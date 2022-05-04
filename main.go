@@ -53,6 +53,7 @@ func activate(ctx context.Context) {
 
 	gtkutil.BindActionMap(win, map[string]func(){
 		"win.preferences": func() { prefui.ShowDialog(ctx) },
+		"win.about":       func() { NewAboutDialog(ctx).Show() },
 	})
 
 	win.SetChild(pages)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"html"
 	"image/color"
 	"io"
 	"math"
@@ -106,6 +107,7 @@ func NewCameraHeader(ctx context.Context) *CameraHeader {
 	menu.ConnectClicked(func() {
 		gtkutil.ShowPopoverMenu(menu, gtk.PosBottom, [][2]string{
 			{"_Preferences", "win.preferences"},
+			{"_About", "win.about"},
 			{"_Quit", "app.quit"},
 		})
 	})
@@ -130,7 +132,7 @@ func NewCameraHeader(ctx context.Context) *CameraHeader {
 	return &h
 }
 
-var timeFormat = prefs.NewString("3:04:05.000 PM", prefs.StringMeta{
+var timeFormat = prefs.NewString("03:04:05.000 PM", prefs.StringMeta{
 	Name:        "Time Format",
 	Section:     "Header",
 	Description: "The format of the timestamp at the top-right corner. See https://pkg.go.dev/time#pkg-constants.",
@@ -274,12 +276,29 @@ type CameraView struct {
 	overlay *gtk.Overlay
 	picture *gtk.Picture
 	header  *CameraHeader
-	error   *gtk.Label
+	error   *errorOverlay
 
 	ctx gtkutil.Cancellable
 }
 
-var cameraViewCSS = cssutil.Applier("camera-view", ``)
+type errorOverlay struct {
+	*gtk.Overlay
+	label *gtk.Label
+}
+
+var cameraViewCSS = cssutil.Applier("camera-view", `
+	.camera-error {
+		background-color: alpha(black, 0.45);
+		box-shadow: 0 0 80px 50px black inset;
+		color: red;
+		font-size: 1.1em;
+	}
+	.camera-error label {
+		padding: 16px;
+		margin: 32px;
+		border: 1px solid red;
+	}
+`)
 
 func NewCameraView(ctx context.Context, url string, fps int) *CameraView {
 	picture := gtk.NewPicture()
@@ -288,10 +307,15 @@ func NewCameraView(ctx context.Context, url string, fps int) *CameraView {
 	picture.SetHExpand(true)
 
 	error := gtk.NewLabel("")
-	error.AddCSSClass("camera-error")
-	error.Hide()
-	error.SetXAlign(0.5)
-	error.SetYAlign(0.5)
+	error.SetVAlign(gtk.AlignCenter)
+	error.SetHAlign(gtk.AlignCenter)
+	error.SetWrap(true)
+	error.SetSelectable(true)
+
+	errorBox := gtk.NewOverlay()
+	errorBox.AddCSSClass("camera-error")
+	errorBox.Hide()
+	errorBox.SetChild(error)
 
 	header := NewCameraHeader(ctx)
 	header.SetVAlign(gtk.AlignStart)
@@ -301,7 +325,7 @@ func NewCameraView(ctx context.Context, url string, fps int) *CameraView {
 	})
 
 	overlay := gtk.NewOverlay()
-	overlay.AddOverlay(error)
+	overlay.AddOverlay(errorBox)
 	overlay.AddOverlay(header)
 	overlay.SetChild(picture)
 
@@ -314,7 +338,10 @@ func NewCameraView(ctx context.Context, url string, fps int) *CameraView {
 		overlay:      overlay,
 		header:       header,
 		picture:      picture,
-		error:        error,
+		error: &errorOverlay{
+			Overlay: errorBox,
+			label:   error,
+		},
 	}
 
 	cam.ctx = gtkutil.WithVisibility(ctx, cam)
@@ -338,7 +365,7 @@ func (cam *CameraView) start(ctx context.Context, url string, fps int) {
 		for {
 			pixbuf, err := f.download(ctx, url)
 
-			if lastPixbuf == pixbuf {
+			if pixbuf != nil && lastPixbuf == pixbuf {
 				goto wait
 			}
 			lastPixbuf = pixbuf
@@ -347,7 +374,7 @@ func (cam *CameraView) start(ctx context.Context, url string, fps int) {
 				cam.error.SetVisible(err != nil)
 
 				if err != nil {
-					cam.error.SetText("Error: " + err.Error())
+					cam.error.label.SetMarkup("<b>Error:</b> " + html.EscapeString(err.Error()))
 					return
 				}
 
@@ -382,6 +409,7 @@ func (cam *CameraView) ConnectBack(f func()) {
 }
 
 type frameDownloader struct {
+	client *http.Client
 	pixbuf *gdkpixbuf.Pixbuf
 	etag   string
 }
@@ -395,16 +423,25 @@ var denoiseThreshold = prefs.NewInt(0, prefs.IntMeta{
 })
 
 func (f *frameDownloader) download(ctx context.Context, url string) (*gdkpixbuf.Pixbuf, error) {
+	client := f.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create GET request")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot do GET request")
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("unexpected status: %s", resp.Status)
+	}
 
 	etag := resp.Header.Get("ETag")
 	if etag != "" && etag == f.etag {
